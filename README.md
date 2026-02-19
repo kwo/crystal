@@ -76,9 +76,11 @@ go get github.com/kwo/crystal
 
 ### Usage
 
-Import the package into your project then construct a new crystal Generator.
-With the generator call the Generate() method to generate and return a unique
-crystal ID.
+Import the package into your project, construct a generator with
+`crystal.NewGenerator()`, and call `Generate()` to return a unique crystal ID.
+`NewGenerator` automatically determines the epoch, machine, and PID for you,
+while `crystal.New(epoch, machine, pid)` lets you instantiate a generator with
+explicit overrides.
 
 **Example Program:**
 
@@ -87,17 +89,13 @@ package main
 
 import (
     "fmt"
-    "log"
 
     "github.com/kwo/crystal"
 )
 
 func main() {
-	// Create a new generator (uses automatic detection by default)
-	gen, err := crystal.New()
-    if err != nil {
-        log.Fatal(err)
-    }
+    // Create a new generator (uses automatic detection by default)
+    gen := crystal.NewGenerator()
 
     // Generate a crystal ID
     id := gen.Generate()
@@ -119,15 +117,26 @@ func main() {
 }
 ```
 
-To override the automatically detected values, set the package-level variables
-before calling `New()`:
+To override the automatically detected values for a single generator, pass your
+own epoch, machine name, and PID to `crystal.New()`:
+
+```go
+gen := crystal.New(
+    time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+    "worker-01",
+    4242,
+)
+```
+
+To apply overrides globally, set the package-level variables before calling
+`NewGenerator()`:
 
 ```go
 crystal.Epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
 crystal.Machine = "worker-01"
 crystal.PID = 4242
 
-gen, err := crystal.New()
+gen := crystal.NewGenerator()
 ```
 
 #### Package-Level Overrides
