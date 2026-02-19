@@ -12,11 +12,7 @@ import (
 
 func main() {
 	// Create a new generator
-	crystal.Epoch = time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC).Unix()
-	gen, err := crystal.New()
-	if err != nil {
-		log.Fatalf("Failed to create generator: %v", err)
-	}
+	gen := crystal.New(time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC), "", 0)
 
 	fmt.Printf("Generator initialized:\n")
 	fmt.Printf("  Epoch: %s\n", gen.Epoch().Format(time.RFC3339))

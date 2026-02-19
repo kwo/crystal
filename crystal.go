@@ -67,12 +67,17 @@ type Generator struct {
 	lastSec int64
 }
 
-// New creates a new Generator using the package-level overrides when set.
-func New() (*Generator, error) {
-	node, machine, pid, err := calculateNodeID()
-	if err != nil {
-		return nil, err
-	}
+// New returns a Generator with explicit epoch, machine, and pid overrides.
+func New(epoch time.Time, machine string, pid int) *Generator {
+	Epoch = epoch.Unix()
+	Machine = machine
+	PID = pid
+	return NewGenerator()
+}
+
+// NewGenerator creates a new Generator using the package-level overrides when set.
+func NewGenerator() *Generator {
+	node, machine, pid := calculateNodeID()
 
 	return &Generator{
 		node:    node,
@@ -80,11 +85,11 @@ func New() (*Generator, error) {
 		pid:     pid,
 		step:    initCounter(),
 		lastSec: epochSeconds(),
-	}, nil
+	}
 }
 
 // calculateNodeID generates an 11-bit node ID from hostname + PID hash
-func calculateNodeID() (uint64, string, int, error) {
+func calculateNodeID() (uint64, string, int) {
 	machine := Machine
 	var err error
 	if machine == "" {
@@ -105,7 +110,7 @@ func calculateNodeID() (uint64, string, int, error) {
 	hash := h.Sum(nil)
 
 	// Extract 11 bits from first 2 bytes
-	return uint64(binary.BigEndian.Uint16(hash[0:2]) & nodeMax), machine, pid, err
+	return uint64(binary.BigEndian.Uint16(hash[0:2]) & nodeMax), machine, pid
 }
 
 // initCounter returns a random seed for the 20-bit counter. The seed is capped

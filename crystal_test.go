@@ -7,10 +7,7 @@ import (
 )
 
 func TestNew(t *testing.T) {
-	gen, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
+	gen := NewGenerator()
 
 	if gen.Machine() == "" {
 		t.Error("Machine() returned empty string")
@@ -26,10 +23,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestGenerate(t *testing.T) {
-	gen, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
+	gen := NewGenerator()
 
 	// Generate multiple IDs
 	ids := make([]ID, 1000)
@@ -55,10 +49,7 @@ func TestGenerate(t *testing.T) {
 }
 
 func TestIDMethods(t *testing.T) {
-	gen, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
+	gen := NewGenerator()
 
 	id := gen.Generate()
 
@@ -86,10 +77,7 @@ func TestIDMethods(t *testing.T) {
 }
 
 func TestParseString(t *testing.T) {
-	gen, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
+	gen := NewGenerator()
 
 	id := gen.Generate()
 	s := id.String()
@@ -105,10 +93,7 @@ func TestParseString(t *testing.T) {
 }
 
 func TestParseBase32(t *testing.T) {
-	gen, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
+	gen := NewGenerator()
 
 	id := gen.Generate()
 	s := id.Base32()
@@ -138,10 +123,7 @@ func TestParseBase32Invalid(t *testing.T) {
 }
 
 func TestParseHex(t *testing.T) {
-	gen, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
+	gen := NewGenerator()
 
 	id := gen.Generate()
 	h := id.Hex()
@@ -164,10 +146,7 @@ func TestParseHexInvalid(t *testing.T) {
 }
 
 func TestParseInt64(t *testing.T) {
-	gen, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
+	gen := NewGenerator()
 
 	id := gen.Generate()
 	i := id.Int64()
@@ -199,10 +178,7 @@ func TestPackageLevelOverrides(t *testing.T) {
 	PID = 4242
 	Epoch = 946684800 // 2000-01-01 UTC
 
-	gen, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
+	gen := NewGenerator()
 
 	if gen.machine != Machine {
 		t.Fatalf("expected machine %s, got %s", Machine, gen.machine)
@@ -227,10 +203,7 @@ func TestEpochDefault(t *testing.T) {
 		Epoch = origEpoch
 	})
 
-	gen, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
+	gen := NewGenerator()
 
 	if gen.Epoch().Unix() != 0 {
 		t.Fatalf("expected default epoch 0, got %d", gen.Epoch().Unix())
@@ -238,10 +211,7 @@ func TestEpochDefault(t *testing.T) {
 }
 
 func TestConcurrency(t *testing.T) {
-	gen, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
+	gen := NewGenerator()
 
 	const numGoroutines = 10
 	const idsPerGoroutine = 1000
@@ -277,10 +247,7 @@ func TestConcurrency(t *testing.T) {
 }
 
 func TestBitAllocation(t *testing.T) {
-	gen, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
+	gen := NewGenerator()
 
 	id := gen.Generate()
 	idInt := uint64(id) //nolint:gosec
@@ -313,10 +280,7 @@ func TestBitAllocation(t *testing.T) {
 }
 
 func BenchmarkGenerate(b *testing.B) {
-	gen, err := New()
-	if err != nil {
-		b.Fatalf("New() failed: %v", err)
-	}
+	gen := NewGenerator()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -325,10 +289,7 @@ func BenchmarkGenerate(b *testing.B) {
 }
 
 func BenchmarkGenerateParallel(b *testing.B) {
-	gen, err := New()
-	if err != nil {
-		b.Fatalf("New() failed: %v", err)
-	}
+	gen := NewGenerator()
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
