@@ -19,6 +19,10 @@ func TestNew(t *testing.T) {
 	if gen.Pid() == 0 {
 		t.Error("Pid() returned 0")
 	}
+
+	if node := gen.NodeID(); node > nodeMax {
+		t.Fatalf("NodeID() out of range: %d", node)
+	}
 }
 
 func TestGenerate(t *testing.T) {
@@ -100,10 +104,62 @@ func TestParseString(t *testing.T) {
 	}
 }
 
+func TestParseBase32(t *testing.T) {
+	gen, err := New()
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	id := gen.Generate()
+	s := id.Base32()
+
+	parsed, err := ParseBase32(s)
+	if err != nil {
+		t.Fatalf("ParseBase32() failed: %v", err)
+	}
+
+	if parsed != id {
+		t.Errorf("ParseBase32() returned wrong ID: got %d, want %d", parsed.Int64(), id.Int64())
+	}
+}
+
 func TestParseStringInvalid(t *testing.T) {
 	_, err := ParseString("invalid!@#")
 	if err == nil {
 		t.Error("ParseString() should fail for invalid characters")
+	}
+}
+
+func TestParseBase32Invalid(t *testing.T) {
+	_, err := ParseBase32("invalid!@#")
+	if err == nil {
+		t.Error("ParseBase32() should fail for invalid characters")
+	}
+}
+
+func TestParseHex(t *testing.T) {
+	gen, err := New()
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	id := gen.Generate()
+	h := id.Hex()
+
+	parsed, err := ParseHex(h)
+	if err != nil {
+		t.Fatalf("ParseHex() failed: %v", err)
+	}
+
+	if parsed != id {
+		t.Errorf("ParseHex() returned wrong ID: got %d, want %d", parsed.Int64(), id.Int64())
+	}
+}
+
+func TestParseHexInvalid(t *testing.T) {
+	_, err := ParseHex("zzzz")
+	if err == nil {
+		t.Error("ParseHex() should fail for invalid input")
 	}
 }
 
@@ -125,9 +181,59 @@ func TestParseInt64(t *testing.T) {
 func TestInitCounterRange(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		val := initCounter()
-		if val > 0x7FFF {
+		if val > uint32(stepSeedMask) {
 			t.Fatalf("initCounter returned value out of range: %d", val)
 		}
+	}
+}
+
+func TestPackageLevelOverrides(t *testing.T) {
+	origMachine, origPID, origEpoch := Machine, PID, Epoch
+	t.Cleanup(func() {
+		Machine = origMachine
+		PID = origPID
+		Epoch = origEpoch
+	})
+
+	Machine = "custom-host"
+	PID = 4242
+	Epoch = 946684800 // 2000-01-01 UTC
+
+	gen, err := New()
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	if gen.machine != Machine {
+		t.Fatalf("expected machine %s, got %s", Machine, gen.machine)
+	}
+	if gen.pid != PID {
+		t.Fatalf("expected pid %d, got %d", PID, gen.pid)
+	}
+	if gen.Epoch().Unix() != Epoch {
+		t.Fatalf("expected epoch %d, got %d", Epoch, gen.Epoch().Unix())
+	}
+
+	id := gen.Generate()
+	if time.Since(id.Time()) > time.Second {
+		t.Fatalf("ID time not near now: %v", id.Time())
+	}
+}
+
+func TestEpochDefault(t *testing.T) {
+	origEpoch := Epoch
+	Epoch = 0
+	t.Cleanup(func() {
+		Epoch = origEpoch
+	})
+
+	gen, err := New()
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	if gen.Epoch().Unix() != 0 {
+		t.Fatalf("expected default epoch 0, got %d", gen.Epoch().Unix())
 	}
 }
 
@@ -183,10 +289,11 @@ func TestBitAllocation(t *testing.T) {
 	step := idInt & stepMask
 	node := (idInt >> nodeShift) & nodeMax
 	timestamp := idInt >> timeShift
+	realTimestamp := timestamp + uint64(Epoch)
 
-	// Verify step fits in 16 bits
+	// Verify step fits in 20 bits
 	if step > stepMask {
-		t.Errorf("Step exceeds 16 bits: %d", step)
+		t.Errorf("Step exceeds 20 bits: %d", step)
 	}
 
 	// Verify node fits in 11 bits
@@ -195,13 +302,13 @@ func TestBitAllocation(t *testing.T) {
 	}
 
 	// Verify timestamp has reasonable value (not zero, within last minute)
-	if timestamp == 0 {
+	if realTimestamp == 0 {
 		t.Error("Timestamp is zero")
 	}
 
 	now := uint64(time.Now().Unix()) //nolint:gosec
-	if timestamp > now || now-timestamp > 60 {
-		t.Errorf("Timestamp unreasonable: %d (now: %d)", timestamp, now)
+	if realTimestamp > now || now-realTimestamp > 60 {
+		t.Errorf("Timestamp unreasonable: %d (now: %d)", realTimestamp, now)
 	}
 }
 

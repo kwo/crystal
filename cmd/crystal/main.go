@@ -5,18 +5,22 @@ import (
 	"log"
 	"os"
 	"text/tabwriter"
+	"time"
 
 	"github.com/kwo/crystal"
 )
 
 func main() {
 	// Create a new generator
+	crystal.Epoch = time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC).Unix()
 	gen, err := crystal.New()
 	if err != nil {
 		log.Fatalf("Failed to create generator: %v", err)
 	}
 
 	fmt.Printf("Generator initialized:\n")
+	fmt.Printf("  Epoch: %s\n", gen.Epoch().Format(time.RFC3339))
+	fmt.Printf("  Node ID: %d\n", gen.NodeID())
 	fmt.Printf("  Machine: %s\n", gen.Machine())
 	fmt.Printf("  PID: %d\n", gen.Pid())
 	fmt.Println()
@@ -27,7 +31,7 @@ func main() {
 	fmt.Fprintln(w, "#\tInt64\tBase32\tHex\tTime")
 	fmt.Fprintln(w, "--\t------------------\t---------------\t----------------\t-------------------")
 
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 10; i++ {
 		id := gen.Generate()
 		fmt.Fprintf(w, "%d\t%d\t%s\t%s\t%s\n",
 			i+1,

@@ -12,19 +12,19 @@ central coordination is required.
 The ID as a whole is a 63-bit integer stored in an int64.
 
 - 1 bit is unused, always set to 0 to keep the ID positive.
-- 36 bits are used to store a timestamp with second precision, using the Unix epoch.
+- 32 bits are used to store a timestamp with second precision, measured from the configurable `crystal.Epoch` (defaults to the Unix epoch).
 - 11 bits are used to store a node ID, automatically derived from a hash of the hostname and process ID.
-- 16 bits are used to store a sequence number, starting from a random value and incrementing for each ID generated in the same second.
+- 20 bits are used to store a sequence number, starting from a random value and incrementing for each ID generated in the same second.
 
 ```
 +-----------------------------------------------------------------------------+
-| 1 Bit Unused | 36 Bit Timestamp |  11 Bit Node ID  |   16 Bit Sequence ID  |
+| 1 Bit Unused | 32 Bit Timestamp |  11 Bit Node ID  |   20 Bit Sequence ID  |
 +-----------------------------------------------------------------------------+
 ```
 
-Using these settings, this allows for 65,536 unique IDs to be generated every
-second, per node. The 36-bit timestamp provides a range of ~2,177 years from the
-Unix epoch (until approximately year 4147).
+Using these settings, this allows for 1,048,576 unique IDs to be generated every
+second, per node. The 32-bit timestamp provides a range of ~136 years from
+whichever epoch you configure (e.g., Unix epoch → approximately year 2106).
 
 ### Node ID
 
@@ -45,6 +45,11 @@ time the second changes. This prevents collision patterns when multiple
 processes start simultaneously. If you generate enough IDs in the same second
 that the sequence would roll over, the generate function will pause until the
 next second.
+
+Internally:
+- `initCounter` seeds the per-second counter with a random value capped at `2^19 - 1` (falling back to the current timestamp if needed) so it never starts right next to the rollover boundary.
+- `step` stores the live counter value on the `Generator` and increments for every ID created within the same second.
+- `stepMask` (`0xFFFFF`) keeps the counter constrained to 20 bits and determines when it wraps/pauses for the next second.
 
 ### Clock Rollback Protection
 
@@ -88,8 +93,8 @@ import (
 )
 
 func main() {
-    // Create a new generator (automatic node ID calculation)
-    gen, err := crystal.New()
+	// Create a new generator (uses automatic detection by default)
+	gen, err := crystal.New()
     if err != nil {
         log.Fatal(err)
     }
@@ -106,17 +111,48 @@ func main() {
     // Print out the ID's timestamp
     fmt.Printf("ID Time  : %v\n", id.Time())
 
-    // Print out the generator's machine and process info
+    // Print out the generator's config info
+    fmt.Printf("Epoch    : %v\n", gen.Epoch())
+    fmt.Printf("Node ID  : %d\n", gen.NodeID())
     fmt.Printf("Machine  : %s\n", gen.Machine())
     fmt.Printf("PID      : %d\n", gen.Pid())
 }
 ```
+
+To override the automatically detected values, set the package-level variables
+before calling `New()`:
+
+```go
+crystal.Epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
+crystal.Machine = "worker-01"
+crystal.PID = 4242
+
+gen, err := crystal.New()
+```
+
+#### Package-Level Overrides
+
+- `crystal.Epoch` overrides the timestamp base (seconds since Unix epoch). IDs store seconds since this value, and `ID.Time()` adds it back so outputs stay in real time.
+- `crystal.Machine` overrides the reported hostname when non-empty.
+- `crystal.PID` overrides the reported process ID when non-zero.
 
 ### Parsing
 
 ```go
 // From base32 string
 id, err := crystal.ParseString("0d6av3w2kc002")
+if err != nil {
+    log.Fatal(err)
+}
+
+// ParseString is an alias for ParseBase32
+id, err := crystal.ParseBase32("0d6av3w2kc002")
+if err != nil {
+    log.Fatal(err)
+}
+
+// From hex string
+id, err := crystal.ParseHex("00ff11aa22bb33cc")
 if err != nil {
     log.Fatal(err)
 }
@@ -142,7 +178,7 @@ go test -run=^$ -bench=.
 | String Size | 13 chars | 20 chars | up to 20 chars |
 | Time Precision | 1 second | 1 second | 1 ms |
 | Node Bits | 11 | 40 (24+16) | 10 |
-| Sequence Bits | 16 | 24 | 12 |
+| Sequence Bits | 20 | 24 | 12 |
 | Configuration | None | None | Required |
 | Sortable | Yes | Yes | Yes |
 
