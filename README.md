@@ -3,7 +3,7 @@
 A minimal unique ID generator for Go.
 
 Crystal generates 63-bit unique identifiers optimized for distributed systems.
-It combines a timestamp, machine identifier, and sequence number into a single
+It combines a millisecond timestamp and a seeded sequence counter into a single
 sortable ID that fits within a signed 64-bit integer. No configuration or
 central coordination is required.
 
@@ -12,44 +12,40 @@ central coordination is required.
 The ID as a whole is a 63-bit integer stored in an int64.
 
 - 1 bit is unused, always set to 0 to keep the ID positive.
-- 32 bits are used to store a timestamp with second precision, measured from the configurable `crystal.Epoch` (defaults to the Unix epoch).
-- 11 bits are used to store a node ID, automatically derived from a hash of the hostname and process ID.
-- 20 bits are used to store a sequence number, starting from a random value and incrementing for each ID generated in the same second.
+- `crystal.Timebits` bits (default 42, configurable between 40 and 48) are used to store a timestamp with millisecond precision, measured from the configurable `crystal.Epoch` (defaults to 2020-01-01T00:00:00Z).
+- The remaining bits (default 21) store a sequence number, starting from a seeded random value and incrementing for each ID generated in the same millisecond.
 
 ```
 +-----------------------------------------------------------------------------+
-| 1 Bit Unused | 32 Bit Timestamp |  11 Bit Node ID  |   20 Bit Sequence ID  |
+| 1 Bit Unused | 42 Bit Timestamp |           21 Bit Sequence ID              |
 +-----------------------------------------------------------------------------+
 ```
 
-Using these settings, this allows for 1,048,576 unique IDs to be generated every
-second, per node. The 32-bit timestamp provides a range of ~136 years from
-whichever epoch you configure (e.g., Unix epoch → approximately year 2106).
+Using the defaults, each generator can emit 2,097,152 unique IDs every
+millisecond. Adjusting `crystal.Timebits` (40–48) trades timestamp range for per-
+millisecond throughput (and vice versa). With 42 bits allocated to time you get
+~139 years from whichever epoch you configure (e.g., Unix epoch → approx year 2109).
 
-### Node ID
+### Seed Material
 
-The node ID is derived automatically with no configuration required:
-
-```
-SHA256(hostname + PID)[0:2] & 0x07FF
-```
-
-This provides 2,048 possible node values with natural distribution across the
-ID space. Each unique combination of hostname and process ID produces a
-different node value.
+While the node identifier is no longer embedded in the ID, the hostname+PID
+digest (`SHA256(hostname || PID)`) is still computed internally and mixed
+directly into the cryptographic RNG that selects the initial sequence value each
+millisecond. Separate processes naturally diverge even if they start at the
+exact same time.
 
 ### Sequence Number
 
-The sequence number starts from a cryptographically random value (not 0) each
-time the second changes. This prevents collision patterns when multiple
-processes start simultaneously. If you generate enough IDs in the same second
-that the sequence would roll over, the generate function will pause until the
-next second.
+The sequence number starts from a cryptographically random, node-seeded value
+each time the millisecond changes. This prevents collision patterns when
+multiple processes start simultaneously. If you generate enough IDs in the same
+millisecond that the sequence would roll over, the generator waits until the
+clock advances.
 
 Internally:
-- `initCounter` seeds the per-second counter with a random value capped at `2^19 - 1` (falling back to the current timestamp if needed) so it never starts right next to the rollover boundary.
-- `step` stores the live counter value on the `Generator` and increments for every ID created within the same second.
-- `stepMask` (`0xFFFFF`) keeps the counter constrained to 20 bits and determines when it wraps/pauses for the next second.
+- `initCounter` mixes the hostname/PID hash with cryptographic randomness and caps the starting value at `2^(stepBits-1) - 1` so it never begins right next to the rollover boundary (where `stepBits = 63 - crystal.Timebits`, yielding 15–23 bits of sequence space).
+- `step` stores the live counter value on the `Generator` and increments for every ID created within the same millisecond.
+- `stepMask` (computed as `(1 << (63 - crystal.Timebits)) - 1`, default `0x1FFFFF`) keeps the counter constrained to the configured number of bits and determines when it wraps/pauses for the next millisecond.
 
 ### Clock Rollback Protection
 
@@ -77,10 +73,9 @@ go get github.com/kwo/crystal
 ### Usage
 
 Import the package into your project, construct a generator with
-`crystal.NewGenerator()`, and call `Generate()` to return a unique crystal ID.
-`NewGenerator` automatically determines the epoch, machine, and PID for you,
-while `crystal.New(epoch, machine, pid)` lets you instantiate a generator with
-explicit overrides.
+`crystal.New()`, and call `Generate()` to return a unique crystal ID.
+`New()` automatically determines the host/PID seed for you, while
+`crystal.Epoch`/`crystal.Timebits` (40–48) let you tweak the layout before calling `New()`.
 
 **Example Program:**
 
@@ -95,7 +90,7 @@ import (
 
 func main() {
     // Create a new generator (uses automatic detection by default)
-    gen := crystal.NewGenerator()
+    gen := crystal.New()
 
     // Generate a crystal ID
     id := gen.Generate()
@@ -111,39 +106,29 @@ func main() {
 
     // Print out the generator's config info
     fmt.Printf("Epoch    : %v\n", gen.Epoch())
-    fmt.Printf("Node ID  : %d\n", gen.NodeID())
-    fmt.Printf("Machine  : %s\n", gen.Machine())
-    fmt.Printf("PID      : %d\n", gen.Pid())
 }
 ```
 
-To override the automatically detected values for a single generator, pass your
-own epoch, machine name, and PID to `crystal.New()`:
+Override the epoch globally by setting `crystal.Epoch` before constructing the
+generator. Adjust `crystal.Timebits` (40–48, also before `New()`) if you need a
+different time/sequence split:
 
 ```go
-gen := crystal.New(
-    time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
-    "worker-01",
-    4242,
-)
+crystal.Epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+crystal.Timebits = 40 // optional: 40 time bits, 23 sequence bits
+
+gen := crystal.New()
 ```
 
 To apply overrides globally, set the package-level variables before calling
-`NewGenerator()`:
+`New()`:
 
 ```go
-crystal.Epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
-crystal.Machine = "worker-01"
-crystal.PID = 4242
+crystal.Epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+crystal.Timebits = 44
 
-gen := crystal.NewGenerator()
+gen := crystal.New()
 ```
-
-#### Package-Level Overrides
-
-- `crystal.Epoch` overrides the timestamp base (seconds since Unix epoch). IDs store seconds since this value, and `ID.Time()` adds it back so outputs stay in real time.
-- `crystal.Machine` overrides the reported hostname when non-empty.
-- `crystal.PID` overrides the reported process ID when non-zero.
 
 ### Parsing
 
@@ -185,11 +170,27 @@ go test -run=^$ -bench=.
 |---------|---------|-----|-----------|
 | Bits | 63 | 96 | 63 |
 | String Size | 13 chars | 20 chars | up to 20 chars |
-| Time Precision | 1 second | 1 second | 1 ms |
-| Node Bits | 11 | 40 (24+16) | 10 |
-| Sequence Bits | 20 | 24 | 12 |
+| Time Precision | 1 millisecond | 1 second | 1 ms |
+| Node Bits | 0 | 40 (24+16) | 10 |
+| Sequence Bits | 21 | 24 | 12 |
 | Configuration | None | None | Required |
 | Sortable | Yes | Yes | Yes |
+
+
+## Time Bits
+
+Assuming an unsigned timestamp of milliseconds since 2020-01-01T00:00:00.000Z, the maximum value is 2^bits − 1, so the max date is:
+
+| Bits |      Max value (ms) | Max UTC date/time         | Range (years, months) |
+| ---: | ------------------: | ------------------------- | --------------------- |
+|   41 |   2,199,023,255,551 | 2089-09-06T15:47:35.551Z  | 69y 8m                |
+|   42 |   4,398,046,511,103 | 2159-05-15T07:35:11.103Z  | 139y 4m               |
+|   43 |   8,796,093,022,207 | 2298-09-26T15:10:22.207Z  | 278y 8m               |
+|   44 |  17,592,186,044,415 | 2577-06-22T06:20:44.415Z  | 557y 5m               |
+|   45 |  35,184,372,088,831 | 3134-12-13T12:41:28.831Z  | 1114y 11m             |
+|   46 |  70,368,744,177,663 | 4249-11-24T01:22:57.663Z  | 2229y 10m             |
+|   47 | 140,737,488,355,327 | 6479-10-17T02:45:55.327Z  | 4459y 9m              |
+|   48 | 281,474,976,710,655 | 10939-08-03T05:31:50.655Z | 8919y 7m              |
 
 ## License
 

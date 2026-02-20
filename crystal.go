@@ -1,9 +1,8 @@
 // Package crystal provides a minimal, high-performance unique ID generator.
 //
 // Bit Allocation (63 bits total, fits in int64):
-//   - Time: 32 bits - Seconds since Unix epoch (1970-01-01), ~136 years span
-//   - Node: 11 bits - Auto-calculated from hostname + PID hash (2,048 values)
-//   - Step: 20 bits - Monotonic counter (1,048,576 IDs/second/node)
+//   - Time: Configurable via Timebits (default 42) - Milliseconds since epoch
+//   - Step: Remaining bits (default 21) - Monotonic counter each millisecond
 //
 // Features:
 //   - No configuration required, fully automatic node calculation
@@ -28,163 +27,86 @@ import (
 )
 
 const (
-	// timeBits = 32
-	nodeBits = 11
-	stepBits = 20
-
-	timeShift    = nodeBits + stepBits // 27
-	nodeShift    = stepBits            // 16
-	stepMask     = (1 << stepBits) - 1 // 0xFFFFF
-	stepSeedMask = (1 << (stepBits - 1)) - 1
-	nodeMax      = (1 << nodeBits) - 1 // 2047
+	totalBits   = 63
+	minTimebits = 40
+	maxTimebits = 48
 )
-
-// base32Encoding uses Crockford alphabet in lowercase (excludes I, L, O, U)
-//
-//nolint:gochecknoglobals
-var base32Encoding = base32.NewEncoding("0123456789abcdefghjkmnpqrstvwxyz").WithPadding(base32.NoPadding)
 
 // ID represents a unique crystal identifier (63 bits, always positive)
 type ID int64
 
+const defaultEpochMillis = int64(1577836800000) // 2020-01-01 00:00:00 UTC
+
 // Package-level overrides applied when creating new generators.
 var (
-	// Epoch overrides the timestamp base (seconds since Unix epoch) when non-zero.
-	Epoch int64
-	// Machine overrides the hostname when non-empty.
-	Machine string
-	// PID overrides the process identifier when non-zero.
-	PID int
+	// Epoch overrides the timestamp base (milliseconds since Unix epoch) when non-zero.
+	Epoch int64 = defaultEpochMillis
+	// Timebits controls how many bits are assigned to the timestamp (default 42, range 40-48).
+	Timebits = 42
+	// base32Encoding uses Crockford alphabet in lowercase (excludes I, L, O, U)
+	//
+	//nolint:gochecknoglobals
+	base32Encoding = base32.NewEncoding("0123456789abcdefghjkmnpqrstvwxyz").WithPadding(base32.NoPadding)
 )
 
 // Generator creates unique IDs with automatic node calculation
 type Generator struct {
-	mu      sync.Mutex
-	node    uint64
-	machine string
-	pid     int
-	step    uint32
-	lastSec int64
+	mu         sync.Mutex
+	step       uint64
+	lastMillis int64
+	seed       [32]byte
 }
 
-// New returns a Generator with explicit epoch, machine, and pid overrides.
-func New(epoch time.Time, machine string, pid int) *Generator {
-	Epoch = epoch.Unix()
-	Machine = machine
-	PID = pid
-	return NewGenerator()
-}
-
-// NewGenerator creates a new Generator using the package-level overrides when set.
-func NewGenerator() *Generator {
-	node, machine, pid := calculateNodeID()
+// New creates a new Generator using the current package-level configuration.
+func New() *Generator {
+	seed := calculateNodeSeed()
 
 	return &Generator{
-		node:    node,
-		machine: machine,
-		pid:     pid,
-		step:    initCounter(),
-		lastSec: epochSeconds(),
+		seed:       seed,
+		step:       initCounter(seed),
+		lastMillis: epochMillis(),
 	}
-}
-
-// calculateNodeID generates an 11-bit node ID from hostname + PID hash
-func calculateNodeID() (uint64, string, int) {
-	machine := Machine
-	var err error
-	if machine == "" {
-		machine, err = os.Hostname()
-		if err != nil {
-			machine = "unknown"
-		}
-	}
-
-	pid := PID
-	if pid == 0 {
-		pid = os.Getpid()
-	}
-
-	h := sha256.New()
-	h.Write([]byte(machine))
-	h.Write([]byte(strconv.Itoa(pid)))
-	hash := h.Sum(nil)
-
-	// Extract 11 bits from first 2 bytes
-	return uint64(binary.BigEndian.Uint16(hash[0:2]) & nodeMax), machine, pid
-}
-
-// initCounter returns a random seed for the 20-bit counter. The seed is capped
-// at 2^19-1 to avoid starting near the rollover boundary.
-func initCounter() uint32 {
-	b := make([]byte, 4)
-	if _, err := rand.Read(b); err != nil {
-		// Fallback to timestamp if crypto/rand fails
-		//nolint:gosec
-		return uint32(time.Now().UnixNano()) & uint32(stepSeedMask)
-	}
-	return uint32(binary.BigEndian.Uint32(b) & uint32(stepSeedMask))
-}
-
-func epochSeconds() int64 {
-	sec := time.Now().Unix() - Epoch
-	if sec < 0 {
-		return 0
-	}
-	return sec
 }
 
 // Epoch returns the configured epoch as time.Time. When unset it returns the
 // Unix epoch (0).
 func (g *Generator) Epoch() time.Time {
-	return time.Unix(Epoch, 0).UTC()
-}
-
-// NodeID returns the 11-bit node identifier assigned to this generator.
-func (g *Generator) NodeID() uint64 {
-	return g.node
-}
-
-// Machine returns the hostname of the machine
-func (g *Generator) Machine() string {
-	return g.machine
-}
-
-// Pid returns the process ID
-func (g *Generator) Pid() int {
-	return g.pid
+	sec := Epoch / 1000
+	nsec := (Epoch % 1000) * int64(time.Millisecond)
+	return time.Unix(sec, nsec).UTC()
 }
 
 // Generate creates and returns a unique ID
 func (g *Generator) Generate() ID {
-	now := epochSeconds()
+	now := epochMillis()
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	// Handle clock rollback or same second
-	if now <= g.lastSec {
-		// Use lastSec as the timestamp to ensure monotonic ordering
-		now = g.lastSec
+	mask := currentStepMask()
+	shift := currentTimeShift()
 
-		g.step = (g.step + 1) & stepMask
-		if g.step == 0 {
-			// Counter overflow - wait for next second
-			for now <= g.lastSec {
-				runtime.Gosched()
-				now = epochSeconds()
-			}
-			g.step = initCounter()
-		}
-	} else {
-		// New second, reset step to random value
-		g.step = initCounter()
+	if now < g.lastMillis {
+		now = g.lastMillis
 	}
 
-	g.lastSec = now
+	if now == g.lastMillis {
+		g.step = (g.step + 1) & mask
+		if g.step == 0 {
+			for now <= g.lastMillis {
+				runtime.Gosched()
+				now = epochMillis()
+			}
+			g.step = initCounter(g.seed)
+		}
+	} else {
+		g.step = initCounter(g.seed)
+	}
 
-	return ID((uint64(now) << timeShift) | //nolint:gosec
-		(g.node << nodeShift) |
-		uint64(g.step))
+	g.lastMillis = now
+
+	return ID((uint64(now) << shift) | //nolint:gosec
+		(g.step & mask))
 }
 
 // Int64 returns the ID as an int64
@@ -194,8 +116,10 @@ func (id ID) Int64() int64 {
 
 // Time returns the timestamp embedded in the ID
 func (id ID) Time() time.Time {
-	timestamp := (int64(id) >> timeShift) + Epoch
-	return time.Unix(timestamp, 0)
+	millis := (int64(id) >> currentTimeShift()) + Epoch
+	sec := millis / 1000
+	nsec := (millis % 1000) * int64(time.Millisecond)
+	return time.Unix(sec, nsec)
 }
 
 // String returns the base32 encoded string representation
@@ -253,4 +177,103 @@ func ParseHex(s string) (ID, error) {
 	}
 	//nolint:gosec
 	return ID(binary.BigEndian.Uint64(b)), nil
+}
+
+// epochMillis returns milliseconds since the configured epoch, clamped to zero
+// when the clock drifts backwards.
+func epochMillis() int64 {
+	millis := time.Now().UnixMilli() - Epoch
+	if millis < 0 {
+		return 0
+	}
+	return millis
+}
+
+// normalizedTimebits clamps the exported Timebits knob into the supported range
+// (40-48 bits) so it always leaves room for at least one sequence bit.
+func normalizedTimebits() int {
+	t := Timebits
+	if t < minTimebits {
+		t = minTimebits
+	}
+	if t > maxTimebits {
+		t = maxTimebits
+	}
+	return t
+}
+
+// currentStepBits returns how many bits are currently available for the
+// sequence component (total bits minus time bits, with a minimum of one).
+func currentStepBits() int {
+	bits := totalBits - normalizedTimebits()
+	if bits < 1 {
+		return 1
+	}
+	return bits
+}
+
+// currentTimeShift converts the current step width into the shift applied when
+// packing or unpacking the timestamp.
+func currentTimeShift() uint {
+	return uint(currentStepBits())
+}
+
+// currentStepMask returns a mask that isolates the sequence bits in the ID.
+func currentStepMask() uint64 {
+	return (uint64(1) << currentTimeShift()) - 1
+}
+
+// currentStepSeedMask returns a mask that caps the initial counter seed to the
+// lower half of the step's range so we never start near the rollover boundary.
+func currentStepSeedMask() uint64 {
+	bits := currentStepBits()
+	if bits <= 1 {
+		return 0
+	}
+	return (uint64(1) << uint(bits-1)) - 1
+}
+
+// calculateNodeSeed derives entropy from the hostname + PID hash, returning the
+// full SHA-256 sum for use when seeding the counter.
+func calculateNodeSeed() [32]byte {
+	machine, err := os.Hostname()
+	if err != nil || machine == "" {
+		machine = "unknown"
+	}
+
+	pid := os.Getpid()
+
+	h := sha256.New()
+	h.Write([]byte(machine))
+	h.Write([]byte(strconv.Itoa(pid)))
+	hash := h.Sum(nil)
+
+	var seed [32]byte
+	copy(seed[:], hash)
+	return seed
+}
+
+// initCounter returns a random seed for the counter. It mixes the 32-byte host
+// digest with fresh crypto/rand output, hashes the combination, and then caps
+// the result with currentStepSeedMask so the starting position always falls in
+// the lower half of the sequence space (avoiding immediate rollover).
+func initCounter(seed [32]byte) uint64 {
+	mask := currentStepSeedMask()
+	if mask == 0 {
+		return 0
+	}
+
+	var randBuf [32]byte
+	if _, err := rand.Read(randBuf[:]); err != nil {
+		// Fallback to timestamp if crypto/rand fails
+		//nolint:gosec
+		fallback := (uint64(time.Now().UnixNano()) ^ binary.BigEndian.Uint64(seed[0:8])) & mask
+		return fallback
+	}
+
+	h := sha256.New()
+	h.Write(seed[:])
+	h.Write(randBuf[:])
+	sum := h.Sum(nil)
+	return binary.BigEndian.Uint64(sum) & mask
 }

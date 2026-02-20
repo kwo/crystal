@@ -12,13 +12,11 @@ import (
 
 func main() {
 	// Create a new generator
-	gen := crystal.New(time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC), "", 0)
+	crystal.Epoch = time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	gen := crystal.New()
 
 	fmt.Printf("Generator initialized:\n")
 	fmt.Printf("  Epoch: %s\n", gen.Epoch().Format(time.RFC3339))
-	fmt.Printf("  Node ID: %d\n", gen.NodeID())
-	fmt.Printf("  Machine: %s\n", gen.Machine())
-	fmt.Printf("  PID: %d\n", gen.Pid())
 	fmt.Println()
 
 	// Generate some IDs and display in table format
@@ -34,7 +32,7 @@ func main() {
 			id.Int64(),
 			id.Base32(),
 			id.Hex(),
-			id.Time().Format("2006-01-02 15:04:05"))
+			id.Time().Format("2006-01-02 15:04:05.000"))
 	}
 	w.Flush()
 

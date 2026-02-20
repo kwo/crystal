@@ -7,23 +7,20 @@ import (
 )
 
 func TestNew(t *testing.T) {
-	gen := NewGenerator()
+	gen := New()
 
-	if gen.Machine() == "" {
-		t.Error("Machine() returned empty string")
+	if gen.lastMillis < 0 {
+		t.Fatal("lastMillis should never be negative")
 	}
 
-	if gen.Pid() == 0 {
-		t.Error("Pid() returned 0")
-	}
-
-	if node := gen.NodeID(); node > nodeMax {
-		t.Fatalf("NodeID() out of range: %d", node)
+	var zeroSeed [32]byte
+	if gen.seed == zeroSeed {
+		t.Fatal("seed was not initialized")
 	}
 }
 
 func TestGenerate(t *testing.T) {
-	gen := NewGenerator()
+	gen := New()
 
 	// Generate multiple IDs
 	ids := make([]ID, 1000)
@@ -49,7 +46,7 @@ func TestGenerate(t *testing.T) {
 }
 
 func TestIDMethods(t *testing.T) {
-	gen := NewGenerator()
+	gen := New()
 
 	id := gen.Generate()
 
@@ -77,7 +74,7 @@ func TestIDMethods(t *testing.T) {
 }
 
 func TestParseString(t *testing.T) {
-	gen := NewGenerator()
+	gen := New()
 
 	id := gen.Generate()
 	s := id.String()
@@ -93,7 +90,7 @@ func TestParseString(t *testing.T) {
 }
 
 func TestParseBase32(t *testing.T) {
-	gen := NewGenerator()
+	gen := New()
 
 	id := gen.Generate()
 	s := id.Base32()
@@ -123,7 +120,7 @@ func TestParseBase32Invalid(t *testing.T) {
 }
 
 func TestParseHex(t *testing.T) {
-	gen := NewGenerator()
+	gen := New()
 
 	id := gen.Generate()
 	h := id.Hex()
@@ -146,7 +143,7 @@ func TestParseHexInvalid(t *testing.T) {
 }
 
 func TestParseInt64(t *testing.T) {
-	gen := NewGenerator()
+	gen := New()
 
 	id := gen.Generate()
 	i := id.Int64()
@@ -158,36 +155,35 @@ func TestParseInt64(t *testing.T) {
 }
 
 func TestInitCounterRange(t *testing.T) {
+	seed := calculateNodeSeed()
+	mask := currentStepSeedMask()
 	for i := 0; i < 1000; i++ {
-		val := initCounter()
-		if val > uint32(stepSeedMask) {
+		val := initCounter(seed)
+		if mask == 0 {
+			if val != 0 {
+				t.Fatalf("expected initCounter to return 0 when mask is 0, got %d", val)
+			}
+			continue
+		}
+		if val > mask {
 			t.Fatalf("initCounter returned value out of range: %d", val)
 		}
 	}
 }
 
 func TestPackageLevelOverrides(t *testing.T) {
-	origMachine, origPID, origEpoch := Machine, PID, Epoch
+	origEpoch := Epoch
 	t.Cleanup(func() {
-		Machine = origMachine
-		PID = origPID
 		Epoch = origEpoch
 	})
 
-	Machine = "custom-host"
-	PID = 4242
-	Epoch = 946684800 // 2000-01-01 UTC
+	customEpoch := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	Epoch = customEpoch
 
-	gen := NewGenerator()
+	gen := New()
 
-	if gen.machine != Machine {
-		t.Fatalf("expected machine %s, got %s", Machine, gen.machine)
-	}
-	if gen.pid != PID {
-		t.Fatalf("expected pid %d, got %d", PID, gen.pid)
-	}
-	if gen.Epoch().Unix() != Epoch {
-		t.Fatalf("expected epoch %d, got %d", Epoch, gen.Epoch().Unix())
+	if gen.Epoch().UnixMilli() != customEpoch {
+		t.Fatalf("expected epoch %d, got %d", customEpoch, gen.Epoch().UnixMilli())
 	}
 
 	id := gen.Generate()
@@ -203,15 +199,60 @@ func TestEpochDefault(t *testing.T) {
 		Epoch = origEpoch
 	})
 
-	gen := NewGenerator()
+	gen := New()
 
-	if gen.Epoch().Unix() != 0 {
-		t.Fatalf("expected default epoch 0, got %d", gen.Epoch().Unix())
+	if gen.Epoch().UnixMilli() != 0 {
+		t.Fatalf("expected default epoch 0, got %d", gen.Epoch().UnixMilli())
+	}
+}
+
+func TestTimebitsOverride(t *testing.T) {
+	origTimebits := Timebits
+	origEpoch := Epoch
+	t.Cleanup(func() {
+		Timebits = origTimebits
+		Epoch = origEpoch
+	})
+
+	Timebits = 40
+	Epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	expectedStepBits := totalBits - normalizedTimebits()
+	if expectedStepBits != 23 {
+		t.Fatalf("expected step bits 23, got %d", expectedStepBits)
+	}
+
+	gen := New()
+	id := gen.Generate()
+
+	mask := currentStepMask()
+	if mask != (uint64(1)<<uint(expectedStepBits))-1 {
+		t.Fatalf("unexpected mask %d", mask)
+	}
+
+	if time.Since(id.Time()) > time.Second {
+		t.Fatalf("ID time not near now: %v", id.Time())
+	}
+}
+
+func TestTimebitsClamp(t *testing.T) {
+	origTimebits := Timebits
+	t.Cleanup(func() {
+		Timebits = origTimebits
+	})
+
+	Timebits = 100
+	if normalizedTimebits() != maxTimebits {
+		t.Fatalf("expected clamp to %d, got %d", maxTimebits, normalizedTimebits())
+	}
+
+	Timebits = 0
+	if normalizedTimebits() != minTimebits {
+		t.Fatalf("expected clamp to %d, got %d", minTimebits, normalizedTimebits())
 	}
 }
 
 func TestConcurrency(t *testing.T) {
-	gen := NewGenerator()
+	gen := New()
 
 	const numGoroutines = 10
 	const idsPerGoroutine = 1000
@@ -247,40 +288,36 @@ func TestConcurrency(t *testing.T) {
 }
 
 func TestBitAllocation(t *testing.T) {
-	gen := NewGenerator()
+	gen := New()
 
 	id := gen.Generate()
 	idInt := uint64(id) //nolint:gosec
 
+	mask := currentStepMask()
+	shift := currentTimeShift()
+
 	// Extract components
-	step := idInt & stepMask
-	node := (idInt >> nodeShift) & nodeMax
-	timestamp := idInt >> timeShift
-	realTimestamp := timestamp + uint64(Epoch)
+	step := idInt & mask
+	timestamp := idInt >> shift
+	realMillis := timestamp + uint64(Epoch)
 
-	// Verify step fits in 20 bits
-	if step > stepMask {
-		t.Errorf("Step exceeds 20 bits: %d", step)
-	}
-
-	// Verify node fits in 11 bits
-	if node > nodeMax {
-		t.Errorf("Node exceeds 11 bits: %d", node)
+	if step > mask {
+		t.Errorf("Step exceeds configured bits: %d", step)
 	}
 
 	// Verify timestamp has reasonable value (not zero, within last minute)
-	if realTimestamp == 0 {
+	if realMillis == 0 {
 		t.Error("Timestamp is zero")
 	}
 
-	now := uint64(time.Now().Unix()) //nolint:gosec
-	if realTimestamp > now || now-realTimestamp > 60 {
-		t.Errorf("Timestamp unreasonable: %d (now: %d)", realTimestamp, now)
+	now := uint64(time.Now().UnixMilli()) //nolint:gosec
+	if realMillis > now || now-realMillis > 60_000 {
+		t.Errorf("Timestamp unreasonable: %d (now: %d)", realMillis, now)
 	}
 }
 
 func BenchmarkGenerate(b *testing.B) {
-	gen := NewGenerator()
+	gen := New()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -289,7 +326,7 @@ func BenchmarkGenerate(b *testing.B) {
 }
 
 func BenchmarkGenerateParallel(b *testing.B) {
-	gen := NewGenerator()
+	gen := New()
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
